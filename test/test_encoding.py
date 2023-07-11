@@ -20,6 +20,7 @@ def test_rgb_encoding():
         b"qoif\x00\x00\x00\x03\x00\x00\x00\t\x03\x00Zvm\xc020\xc0.2.20\xc0.2\xc00.0.2\xc00.\xc020\x00\x00\x00\x00\x00\x00\x00\x01"
     )
     encoded_bytes = qoipy.encode(np.array(input_array), 0)
-    print(f'Encoded: {encoded_bytes}')
+    print(f"Expected: {expected_encoded_bytes}")
+    print(f"Encoded: {encoded_bytes}")
 
     assert expected_encoded_bytes == encoded_bytes

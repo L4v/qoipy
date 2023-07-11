@@ -1,7 +1,7 @@
 from __future__ import annotations
 from PIL import Image
 import numpy as np
-import numpy.typing as npt
+import ctypes
 
 
 PIXEL_CACHE_SIZE = 60
@@ -71,13 +71,13 @@ Colorspace: {self.colorspace}"""
     def tobytes(self) -> bytes:
         return (
             bytes(self.magic)
-            + self.width.to_bytes(4, 'big')
-            + self.height.to_bytes(4, 'big')
+            + self.width.to_bytes(4, "big")
+            + self.height.to_bytes(4, "big")
             + bytes([self.channels, self.colorspace])
         )
 
 
-def get_pixel_hash_mod_64(r: int, g: int, b: int, a: int) -> int:
+def get_pixel_hash_mod_64(r, g, b, a: int = 255) -> int:
     return (r * 3 + g * 5 + b * 7 + a * 11) % 64
 
 
@@ -162,6 +162,10 @@ class InvalidFormatError(Exception):
         super().__init__(self.message)
 
 
+def signed_8bit_wraparound(x) -> int:
+    return ctypes.c_int8(x).value
+
+
 def encode(pixels, colorspace: int) -> bytes:
     if len(pixels.shape) != 3:
         raise InvalidFormatError(
@@ -187,58 +191,77 @@ def encode(pixels, colorspace: int) -> bytes:
 
     while pixel_index < len(pixels):
         current_pixel[:channels] = pixels[pixel_index]
+        print(f'Current pixel: {current_pixel}')
         if current_pixel == previous_pixel:
+            print(f'Run++, {run_length}')
             run_length += 1
             if run_length == QOI_MAX_RUN_LENGTH:
+                print('RUN MAX')
                 data.append(QOI_OP_RUN | (run_length - 1))
                 run_length = 0
 
         else:
             if run_length > 0:
+                print(f'RUN {run_length}, curr: {current_pixel}')
                 data.append(QOI_OP_RUN | (run_length - 1))
                 run_length = 0
-            else:
-                cache_index = get_pixel_hash_mod_64(*current_pixel)
-                cached_pixel = pixel_cache[cache_index]
-                if current_pixel == cached_pixel:
-                    data.append(QOI_OP_INDEX | cache_index)
-                else:
-                    pixel_cache[pixel_index] = current_pixel.copy()
-                    if current_pixel[3] == previous_pixel[3]:
-                        diff_r, diff_g, diff_b = np.subtract(
-                            current_pixel[:3], previous_pixel[:3]
-                        )
-                        diff_r_g = diff_r - diff_g
-                        diff_b_g = diff_b - diff_g
 
-                        if (
-                            -2 <= diff_r <= 1
-                            and -2 <= diff_g <= 1
-                            and -2 <= diff_b <= 1
-                        ):
-                            data.append(
-                                QOI_OP_DIFF
-                                | ((diff_r + 2) << 4)
-                                | ((diff_g + 2) << 2)
-                                | (diff_b + 2)
-                            )
-                        elif (
-                            -32 <= diff_g <= 31
-                            and -8 <= diff_r_g <= 7
-                            and -8 <= diff_b_g <= 7
-                        ):
-                            data.extend(
-                                [
-                                    QOI_OP_LUMA | (diff_g + 32),
-                                    ((diff_r_g + 8) << 4) | (diff_b_g + 8),
-                                ]
-                            )
+            cache_index = get_pixel_hash_mod_64(*current_pixel)
+            cached_pixel = pixel_cache[cache_index]
+            if current_pixel == cached_pixel:
+                print(f'INDEX: {cache_index}, curr: {current_pixel}, to append: {QOI_OP_INDEX | cache_index}')
+                data.append(QOI_OP_INDEX | cache_index)
+            else:
+                pixel_cache[cache_index] = current_pixel.copy()
+                if current_pixel[3] == previous_pixel[3]:
+                    diff_r = signed_8bit_wraparound(
+                        current_pixel[0] - previous_pixel[0]
+                    )
+                    diff_g = signed_8bit_wraparound(
+                        current_pixel[1] - previous_pixel[1]
+                    )
+                    diff_b = signed_8bit_wraparound(
+                        current_pixel[2] - previous_pixel[2]
+                    )
+                    diff_r_g = signed_8bit_wraparound(diff_r - diff_g)
+                    diff_b_g = signed_8bit_wraparound(diff_b - diff_g)
+
+                    if (
+                        -2 <= diff_r <= 1
+                        and -2 <= diff_g <= 1
+                        and -2 <= diff_b <= 1
+                    ):
+                        print('DIFF')
+                        dr = (diff_r + 2) << 4
+                        dg = (diff_g + 2) << 2
+                        db = diff_b + 2
+                        data.append(
+                            QOI_OP_DIFF
+                            | ((diff_r + 2) << 4)
+                            | ((diff_g + 2) << 2)
+                            | (diff_b + 2)
+                        )
+                    elif (
+                        -32 <= diff_g <= 31
+                        and -8 <= diff_r_g <= 7
+                        and -8 <= diff_b_g <= 7
+                    ):
+                        print('LUMA')
+                        data.extend(
+                            [
+                                QOI_OP_LUMA | (diff_g + 32),
+                                ((diff_r_g + 8) << 4) | (diff_b_g + 8),
+                            ]
+                        )
+                else:
+                    if channels == 3:
+                        print('RGB')
+                        data.extend([QOI_OP_RGB, *current_pixel[:3]])
                     else:
-                        if channels == 3:
-                            data.extend([QOI_OP_RGB, *current_pixel[:3]])
-                        else:
-                            data.extend([QOI_OP_RGBA, *current_pixel[:4]])
+                        print('RGBA')
+                        data.extend([QOI_OP_RGBA, *current_pixel[:4]])
         pixel_index += 1
+        previous_pixel = current_pixel.copy()
 
     return header.tobytes() + bytes(data) + bytes(QOI_END_MARKER)
 
